@@ -43,8 +43,10 @@ class SumoModel(kserve.Model):
         # If all fields are found, define the controller and start the simulation
         if all(x is not None for x in (name, network_url, detectors_url, flow_interval_minutes)):
             controller = SumoController(name, network_url, detectors_url, flow_data, flow_interval_minutes)
-            controller.run()
-            self.result_url = controller.result_rul
+            # run() returns the MinIO URLs of (emissions, edgedata), or None if it failed
+            # (it was read from controller.result_rul, which does not exist)
+            result = controller.run()
+            self.result_url = list(result) if result else "Simulation failed."
 
         outputs = {  # "outputs" field is added just because it is mandatory in Open Inference Protocol
             "model_name": settings.MODEL_NAME,

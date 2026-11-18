@@ -12,8 +12,11 @@ class Settings:
     MODEL_VERSION = "0.1"
 
     # SUMO PARAMETERS
-    SUMO_DIR = "/var/lib/sumo"
-    AVAILABLE_PROCESSORS = os.cpu_count()
+    # SUMO installation (its tools/ directory) and where each simulation writes its
+    # files. SUMO_HOME is set by SUMO's images and by the eclipse-sumo wheel.
+    SUMO_DIR = os.getenv("SUMO_HOME", "/var/lib/sumo")
+    WORK_DIR = os.getenv("SUMO_WORK_DIR", os.getenv("SUMO_HOME", "/var/lib/sumo"))
+    AVAILABLE_PROCESSORS = int(os.getenv("SUMO_THREADS", os.cpu_count() or 1))
 
     # DPL CONFIG
     DPL_HOST = os.getenv("DPL_HOST")

@@ -4,20 +4,23 @@ import shutil
 import logging
 import requests
 import subprocess
+import sys
+import math
 import xml.etree.ElementTree as ET
 import pandas as pd
 from datetime import datetime, timezone
 from sumolib.net import readNet
 from sumolib import sensors, files
+from sumolib.geomhelper import distancePointToLine
 
 from config import settings
 from exceptions import SumoException
-from kafka_config import MinioClient
-from ngsi_downloader import NGSILDDownloader
 from ngsild_to_sumo_net import NgsildToSumoNet
-from dpl_downloader import DPLDownloader
 from emissions import SumoPostprocessor
-from ngsi_uploader import NGSIUploader
+
+# MinIO, the Data Platform (Trino) and the NGSI-LD downloader/uploader are imported
+# when used, so the controller also runs without the server's dependencies (e.g.
+# from a batch job that brings its own network, detectors and flows).
 
 
 logging.basicConfig(level=logging.INFO)
@@ -76,11 +79,36 @@ class SumoController:
         simulation_step: int = 60,
         upload_entities: bool = False,
         cleanup: bool = True,
+        network_file: str = None,
+        detectors: list = None,
+        upload_results: bool = True,
+        edge_emissions: bool = False,
+        sumo_args: list = None,
+        random_trips_args: list = None,
+        route_sampler_args: list = None,
+        candidate_routes_file: str = None,
     ):
+        """New optional arguments (all default to the original behaviour):
+
+        network_file: local SUMO network (.net.xml[.gz]) instead of MinIO / NGSI-LD.
+        detectors: detectors as a list of {"detector_id", "lon", "lat"[, "heading"]}
+            instead of detectors_url. With "heading" (direction of travel, degrees from
+            north, clockwise) the detector goes on a lane that runs that way.
+        upload_results: upload the result CSVs to MinIO (False: keep them local).
+        edge_emissions: also aggregate emissions per edge and interval in SUMO
+            (edgeData type="emissions", file edge_emissions_output), much lighter than
+            the per-vehicle emission output for large networks.
+        sumo_args, random_trips_args, route_sampler_args: extra command line options.
+        candidate_routes_file: routes that routeSampler chooses from, computed once
+            for the network (randomTrips with -r), instead of on every run: they do not
+            depend on the counts, and computing many of them takes minutes.
+        """
         self.name = name
         self.network_url = network_url
         self.detectors_url = detectors_url
         self.flow_data = flow_data
+        if simulation_datetime is None:  # the sync KServe model does not send it
+            simulation_datetime = datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
         self.simulation_datetime = simulation_datetime.split('+')[0]
         self.simulation_minutes = 0
         self.use_ngsi_downloader = use_ngsi_downloader
@@ -94,10 +122,19 @@ class SumoController:
         self.meso_simulation = meso_simulation
         self.upload_entities = upload_entities
         self.cleanup = cleanup
+        self.local_network_file = network_file
+        self.detectors = detectors
+        self.upload_results = upload_results
+        self.edge_emissions = edge_emissions
+        self.sumo_args = list(sumo_args or [])
+        self.random_trips_args = list(random_trips_args or [])
+        self.route_sampler_args = list(route_sampler_args or [])
+        self.candidate_routes_file = candidate_routes_file
+        self.emission_url = self.edgedata_url = None
 
         # File definitions for SUMO
-        self.domain_dir = os.path.join(settings.SUMO_DIR, name)
-        self.network_file = os.path.join(self.domain_dir, "net.net.xml")
+        self.domain_dir = os.path.join(settings.WORK_DIR, name)
+        self.network_file = network_file or os.path.join(self.domain_dir, "net.net.xml")
         self.detectors_file = os.path.join(self.domain_dir, "detectors.det.xml")
         self.routes_file = os.path.join(self.domain_dir, "routes.rou.xml")
         self.flow_file = os.path.join(self.domain_dir, "flow.csv")
@@ -110,18 +147,30 @@ class SumoController:
         self.edgedata_ngsi_output = os.path.join(self.domain_dir, "edgedata_out.json")
         self.emission_csv = os.path.join(self.domain_dir, "emission.csv")
         self.edgedata_csv = os.path.join(self.domain_dir, "edgedata.csv")
+        self.edge_emissions_additional = os.path.join(self.domain_dir, "edge_emissions.add.xml")
+        self.edge_emissions_output = os.path.join(self.domain_dir, "edge_emissions.out.xml")
 
-        # MinIO client to download input files
-        self.minio_client = MinioClient()
+        # MinIO client to download input files and upload results
+        self.minio_client = None
+        if self.local_network_file is None or self.detectors is None or self.upload_results:
+            from kafka_config import MinioClient
+            self.minio_client = MinioClient()
 
         # NGSI-LD downloader and uploader
-        self.ngsi_uploader = NGSIUploader()
+        self.ngsi_uploader = None
+        if self.upload_entities:
+            from ngsi_uploader import NGSIUploader
+            self.ngsi_uploader = NGSIUploader()
         self.ngsi_downloader = None
         if self.use_ngsi_downloader:
+            from ngsi_downloader import NGSILDDownloader
             self.ngsi_downloader = NGSILDDownloader()
 
         # DPL downloader
-        self.dpl_downloader = DPLDownloader()
+        self.dpl_downloader = None
+        if self.use_dpl_downloader or (self.detectors is None and self.detectors_url is None):
+            from dpl_downloader import DPLDownloader
+            self.dpl_downloader = DPLDownloader()
 
     def run(self):
         """
@@ -132,7 +181,10 @@ class SumoController:
             self.__create_domain()
             self.__process_detectors()
             self.__process_flow_data()
-            self.__random_trips()
+            if self.candidate_routes_file:
+                self.routes_file = self.candidate_routes_file
+            else:
+                self.__random_trips()
             self.__generate_edgedata()
             self.__route_sampler()
             self.__sumo()
@@ -144,19 +196,34 @@ class SumoController:
         except SumoException:
             logger.info("Simulation aborted. Bye!")
 
-        if self.cleanup:
-            self.__clean_files()
+        finally:
+            # before, a successful run returned without cleaning up
+            if self.cleanup:
+                self.__clean_files()
 
     def __postprocess(self):
-        self.edgedata_entities = self.edgedata_to_ngsild()
-        self.__process_emissions()
+        # The SumoEdgeData entities are only used to upload them
+        if self.upload_entities:
+            self.edgedata_entities = self.edgedata_to_ngsild()
+        if not self.edge_emissions:
+            self.__process_emissions()
 
     def __upload_results(self):
-        emission_url = self.__upload_emissions()
-        edgedata_url = self.__upload_edgedata()
         if self.upload_entities:
             self.__upload_entities(self.edgedata_entities)
+        if not self.upload_results:
+            return None, None
+        if self.edge_emissions:
+            return None, self.__upload_edgedata_csv_free()
+        emission_url = self.__upload_emissions()
+        edgedata_url = self.__upload_edgedata()
         return emission_url, edgedata_url
+
+    def __upload_edgedata_csv_free(self):
+        """With edge_emissions the per-vehicle emissions are not processed: upload the
+        raw edgedata output."""
+        name = self.simulation_datetime.replace(' ', '') + "_edgedata.out.xml"
+        return self.minio_client.upload_file(name, self.edgedata_output)
 
     def __process_emissions(self):
         emission_processor = SumoPostprocessor(
@@ -198,7 +265,7 @@ class SumoController:
     
     def __clean_files(self):
         logger.info(f"Cleaning simulation directory")
-        shutil.rmtree(self.domain_dir)
+        shutil.rmtree(self.domain_dir, ignore_errors=True)
 
         # Close DPL connection if it was used
         if self.dpl_downloader:
@@ -216,7 +283,11 @@ class SumoController:
             os.makedirs(self.domain_dir)
 
         # Retrieve domain information
-        if self.use_ngsi_downloader:
+        if self.local_network_file:
+            if not os.path.exists(self.local_network_file):
+                logger.error(f"Network file {self.local_network_file} not found")
+                raise SumoException
+        elif self.use_ngsi_downloader:
             logger.info(f"Downloading NGSI-LD entities for domain '{self.ngsi_domain}'...")
             try:
                 # Download entities from NGSI-LD broker
@@ -246,7 +317,9 @@ class SumoController:
         Downloads detectors from DPL if use_dpl_downloader is True, otherwise from MinIO.
         """
         # Download detectors
-        if (self.use_dpl_downloader) or (self.detectors_url is None):
+        if self.detectors is not None:
+            detectors = self.detectors
+        elif (self.use_dpl_downloader) or (self.detectors_url is None):
             logger.info(f"Downloading detectors from DPL for domain '{self.dpl_domain}'...")
             detectors = self.dpl_downloader.download_detectors(domain=self.dpl_domain, schema=self.dpl_schema)
         else:
@@ -260,21 +333,32 @@ class SumoController:
         # List to store SUMO detectors
         sumo_detectors = []
 
+        skipped = 0
         for detector in detectors:
             detector_id, lon, lat = detector["detector_id"], detector["lon"], detector["lat"]
+            heading = detector.get("heading")
             xy_pos = network.convertLonLat2XY(lon, lat)
-            lanes = network.getNeighboringLanes(xy_pos[0], xy_pos[1], 10)
+            # With a direction of travel, a wider radius: the closest lane is often the
+            # one of the opposite direction.
+            radius = 10 if heading is None else 25
+            lanes = network.getNeighboringLanes(xy_pos[0], xy_pos[1], radius)
             lanes = [lane for lane in lanes if "passenger" in lane[0].getPermissions()]
-            bestLane = None
-            ref_d = 9999.0
-            for lane, dist in lanes:
-                if dist < ref_d:
-                    ref_d = dist
-                    bestLane = lane
-                pos, _ = bestLane.getClosestLanePosAndDist(xy_pos)
+            if heading is not None:
+                lanes = [(lane, dist) for lane, dist in lanes
+                         if _angle_diff(_lane_bearing(lane, xy_pos), heading) < MAX_HEADING_DIFF]
+            if not lanes:
+                skipped += 1
+                continue
+            bestLane, _ = min(lanes, key=lambda item: item[1])
+            # the position was computed inside the loop, for every candidate lane
+            pos, _ = bestLane.getClosestLanePosAndDist(xy_pos)
+            pos = min(max(pos, 0.0), bestLane.getLength() - 0.1)
             sumo_detectors.append(
-                sensors.inductive_loop.InductiveLoop(detector_id, bestLane.getID(), pos)
+                sensors.inductive_loop.InductiveLoop(str(detector_id), bestLane.getID(), pos)
             )
+        if skipped:
+            logger.warning(f"{skipped} detector(s) without a matching lane were left out")
+        self.detector_ids = {d.id for d in sumo_detectors}
         files.additional.write(self.detectors_file, sumo_detectors)
 
     def __process_flow_data(self):
@@ -291,8 +375,16 @@ class SumoController:
         df = pd.DataFrame(flow_data, columns=["Detector", "Time", "passenger"])
         df["Detector"] = df["Detector"].astype(int)
         df["Time"] = df["Time"].astype(int)
-        self.simulation_minutes = df["Time"].max()
-        self.flow_interval_minutes = df["Time"][1] - df["Time"][0]  # compute flow interval
+        # Only flows of detectors that were placed on the network
+        if getattr(self, "detector_ids", None) is not None:
+            df = df[df["Detector"].astype(str).isin(self.detector_ids)]
+        # The interval is the step between the times of the data (the row order is not
+        # guaranteed); with a single time, the one given in the request.
+        times = sorted(df["Time"].unique())
+        if len(times) > 1:
+            self.flow_interval_minutes = int(min(b - a for a, b in zip(times, times[1:])))
+        # The simulation ends when the last interval ends, not when it starts
+        self.simulation_minutes = int(times[-1]) + int(self.flow_interval_minutes)
         df.to_csv(self.flow_file, sep=';', index=False)
 
     def __random_trips(self) -> bool:
@@ -300,7 +392,8 @@ class SumoController:
         Generates the routes that vehicles can follow in the simulation.
         """
         random_trips_cmd = [
-            "randomTrips.py",
+            sys.executable,
+            os.path.join(settings.SUMO_DIR, "tools", "randomTrips.py"),
             "-n",
             self.network_file,
             "-r",
@@ -309,7 +402,9 @@ class SumoController:
             os.path.join(self.domain_dir, "trips.trips.xml"),
             "-l",
             "-L",
-        ]
+            "--end",
+            str(self.simulation_minutes * 60),
+        ] + self.random_trips_args
         self.__run_cmd(random_trips_cmd)
 
     def __generate_edgedata(self) -> bool:
@@ -318,7 +413,8 @@ class SumoController:
         """
         edgedata_script = os.path.join(settings.SUMO_DIR, "tools", "detector", "edgeDataFromFlow.py")
         edgedata_cmd = [
-            edgedata_script, 
+            sys.executable,
+            edgedata_script,
             "-d",
             self.detectors_file,
             "-f",
@@ -338,6 +434,7 @@ class SumoController:
         """
         routesampler_script = os.path.join(settings.SUMO_DIR, "tools", "routeSampler.py")
         routesampler_cmd = [
+            sys.executable,
             routesampler_script,
             "-r",
             self.routes_file,
@@ -350,8 +447,8 @@ class SumoController:
             "-o",
             self.vehicles_file,
             "--threads",
-            str(settings.AVAILABLE_PROCESSORS)
-        ]
+            str(settings.AVAILABLE_PROCESSORS),
+        ] + self.route_sampler_args
         self.__run_cmd(routesampler_cmd)
 
     def __sumo(self) -> None:
@@ -372,11 +469,25 @@ class SumoController:
             self.edgedata_output,
             "--queue-output",
             self.queuedata_output,
-            "--emission-output",
-            self.emission_file,
-            "--device.emissions.period",
-            str(self.simulation_step),
         ]
+        if self.edge_emissions:
+            # emissions per edge and interval instead of per vehicle and step
+            with open(self.edge_emissions_additional, "w") as f:
+                f.write(
+                    '<additional>\n'
+                    f'    <edgeData id="emissions" type="emissions" file="{self.edge_emissions_output}" '
+                    f'period="{self.flow_interval_minutes * 60}" excludeEmpty="true"/>\n'
+                    '</additional>\n'
+                )
+            sumo_cmd += ["-a", self.edge_emissions_additional, "--device.emissions.probability", "1"]
+        else:
+            sumo_cmd += [
+                "--emission-output",
+                self.emission_file,
+                "--device.emissions.period",
+                str(self.simulation_step),
+            ]
+        sumo_cmd += self.sumo_args
         self.__run_cmd(sumo_cmd)
 
     def edgedata_to_ngsild(self) -> list[dict]:
@@ -472,7 +583,33 @@ class SumoController:
 
     def __run_cmd(self, cmd: list):
         try:
-            _ = subprocess.check_output(' '.join(cmd), stderr=subprocess.PIPE, shell=True)
+            # an argument list, not a shell string: paths and names from requests are
+            # not interpreted by a shell
+            _ = subprocess.check_output([str(arg) for arg in cmd], stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as error:
-            logger.error(f"Error executing command: \n{error}")
+            logger.error(f"Error executing command: \n{error}\n{error.stderr.decode(errors='replace')[-2000:]}")
             raise SumoException
+
+
+MAX_HEADING_DIFF = 30  # degrees between a detector's direction of travel and its lane
+
+
+def _angle_diff(a: float, b: float) -> float:
+    diff = abs(a - b) % 360
+    return min(diff, 360 - diff)
+
+
+def _lane_bearing(lane, xy_pos) -> float:
+    """Direction of travel (degrees from north, clockwise) of the lane segment
+    closest to a point, in the network's projected coordinates."""
+    shape = lane.getShape()
+    best = None
+    for (x1, y1), (x2, y2) in zip(shape, shape[1:]):
+        dist = distancePointToLine(xy_pos, (x1, y1), (x2, y2))
+        if dist is not None and dist >= 0 and (best is None or dist < best[0]):
+            best = (dist, x1, y1, x2, y2)
+    if best is None:
+        (x1, y1), (x2, y2) = shape[0], shape[-1]
+    else:
+        _, x1, y1, x2, y2 = best
+    return math.degrees(math.atan2(x2 - x1, y2 - y1)) % 360
