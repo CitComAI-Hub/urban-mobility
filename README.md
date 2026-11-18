@@ -1,3 +1,10 @@
+> **CitCom fork.** This repository is a fork of the [EU LDT Toolbox](https://interoperable-europe.ec.europa.eu/collection/ldttoolbox)
+> module *Urban Mobility* ([eu_ldt_urban_mobility](https://code.europa.eu/ldt-toolbox/ai_models/eu_ldt_urban_mobility),
+> commit `37fa5d3`, by Libelium Lab and Nunsys, EUPL-1.2), maintained by VRAIN (Universitat Politècnica de València) for the
+> [CitCom data space](https://citcomai-hub.github.io/). It keeps the toolbox's SUMO pipeline and KServe server, fixes some of
+> its bugs and adds a job that reads traffic counts **through a FIWARE data space** and publishes the results as **Smart Data
+> Models**: see [CitCom data space job](#citcom-data-space-job) and [Changes from the toolbox](#changes-from-the-toolbox).
+
 # KServe Interface for SUMO
 
 ## About SUMO
@@ -252,3 +259,96 @@ detector_id,time,flow,domain
 2,15,31,valencia_demo 
 2,60,35,valencia_demo 
 ```
+
+## CitCom data space job
+
+`src/dataspace_job.py` (image `ghcr.io/citcomai-hub/urban-mobility`, built from `Dockerfile.job`) runs one simulation of the
+last hour and exits. In the CitCom data space it runs every hour as a Kubernetes CronJob of the VRAIN participant:
+
+```text
+ Ajuntament de València (provider)                VRAIN (consumer)
+ geoportal ──Airflow──▶ Orion-LD                   urban-mobility job
+   traffic counts        TrafficFlowObserved  ◀── 1. token (ds-consumer-auth, MachineCredential)
+                         (offering traffic-flow)    2. GET /ngsi-ld/v1/entities?type=TrafficFlowObserved
+                                                     3. SumoController: detectors by direction of travel,
+                                                        routeSampler to the counts, mesoscopic SUMO
+                                                     4. upsert ──▶ VRAIN's NGSI-LD broker
+                                                        TrafficFlowObserved (simulated) + CarbonFootprint
+```
+
+1. **Input, through the data space.** The traffic counts are Smart Data Models `TrafficFlowObserved` with `location` (point),
+   `heading` (direction of travel, degrees from north, clockwise; a term of the SDM Transportation context), `intensity`
+   (vehicles per hour) and `dateObserved`. The job gets a token for the provider's connector with
+   [ds-consumer-auth](https://github.com/CitComAI-Hub/ds-consumer-auth): the consumer must have acquired the provider's offering
+   in the marketplace. Counts older than `MAX_AGE_MINUTES`, or without position, direction or intensity, are left out.
+2. **Simulation**, with the toolbox's `SumoController`: detectors placed on a lane that runs in the counted direction, candidate
+   routes computed once for the network (`data/valencia/candidate.rou.xml.gz`), `routeSampler` to match the counts, mesoscopic
+   SUMO with emissions aggregated per street.
+3. **Output, Smart Data Models**, in the consumer's own broker, one entity per street with traffic:
+   - `TrafficFlowObserved` (`urn:ngsi-ld:TrafficFlowObserved:<domain>:sim:<edge>`): `intensity` (veh/h),
+     `averageVehicleSpeed` (km/h), `occupancy`, `dateObservedFrom`/`To`, `location` (LineString), `name` (street).
+   - `CarbonFootprint` (`urn:ngsi-ld:CarbonFootprint:<domain>:sim:<edge>`): `CO2eq` (tonnes of CO2 in the hour, SUMO's
+     emission model), `emissionSource: Transport`, `relatedSource` (the `TrafficFlowObserved`).
+
+   Both say in `description` and `dataProvider` that they are simulated. Other pollutants have no fitting Smart Data Model
+   (the toolbox published them as `AirQualityObserved`, a model for measured concentrations), so they are not published.
+
+| Variable | Default | |
+|---|---|---|
+| `TRAFFIC_SOURCE_URL` | (required) | Provider's gateway, e.g. `https://apisix-townhall-vlc.citcom-vrain-dataspace.eu` |
+| `OUTPUT_BROKER_URL` | (required) | NGSI-LD broker for the results |
+| `DS_ISSUER_URL`, `DS_USERNAME`, `DS_PASSWORD`, `DS_VERIFIER_URL`, `DS_SCOPE`, `DS_CREDENTIAL_TYPE` | | ds-consumer-auth; without `DS_ISSUER_URL`, no token (local tests) |
+| `NETWORK_FILE`, `CANDIDATE_ROUTES_FILE` | Valencia, in the image | SUMO network and candidate routes |
+| `SIM_DOMAIN` | `valencia` | Part of the entity ids |
+| `MAX_AGE_MINUTES` | `90` | Oldest count used |
+| `MIN_DETECTORS` | `100` | Fewer usable counts: no simulation (exit 1) |
+| `SUMO_THREADS` | CPUs | routeSampler threads |
+| `SUMO_ARGS`, `RANDOM_TRIPS_ARGS`, `ROUTE_SAMPLER_ARGS` | see `dataspace_job.py` | JSON lists of extra options |
+
+Run it locally against any NGSI-LD broker with counts:
+
+```console
+docker build -f Dockerfile.job -t urban-mobility-job .
+docker run --rm -e TRAFFIC_SOURCE_URL=http://broker:1026 -e OUTPUT_BROKER_URL=http://broker:1026 urban-mobility-job
+```
+
+Tests: `pip install -r requirements-job.txt pytest && python -m pytest tests`.
+
+### Accuracy
+
+First run (2026-11-18, 975 measurement points of the Ajuntament de València, one hour): the simulated vehicles on the streets
+with detectors are 69% of the counted ones, and GEH < 5 holds on 46% of those streets (the usual target for a calibrated model
+is 85%). routeSampler itself matches the counts much better (92% of the vehicles, GEH < 5 on 82% of the streets): the gap is the
+network, built from OpenStreetMap and **not calibrated** (lanes, traffic light timings, junction capacities, entries at the
+boundary), where the mesoscopic simulation still loses traffic. Treat the results as an estimate of where traffic and
+emissions concentrate, not as values per street. The job logs this fit on every run.
+
+Resources: ~110 s and ~3.6 GB of RAM per run (4 threads).
+
+## Changes from the toolbox
+
+Each change keeps the original behaviour by default, so that it can be proposed upstream.
+
+- **Bugs fixed**
+  - Synchronous KServe model: it read `controller.result_rul` (a typo; the result is now what `run()` returns) and did not
+    pass `simulation_datetime`, which the controller split as a string (now the current time if missing).
+  - `__process_detectors`: the lane position was computed inside the loop over candidate lanes; a detector without a
+    lane crashed the run (now it is left out, with a warning).
+  - `__process_flow_data`: the interval was `Time[1] - Time[0]` (0 with one row per detector, wrong if rows are not in
+    time order) and the simulation ended when the last interval *started*.
+  - `run()` returned before cleaning up after a successful simulation.
+  - Commands ran through a shell (`shell=True` with a joined string): paths and names from requests were interpreted by
+    the shell. Now they run as an argument list, and SUMO's tools with the current Python.
+  - SUMO's tools were expected on the `PATH` and simulations were written inside `SUMO_DIR`: now `SUMO_HOME` and
+    `SUMO_WORK_DIR`.
+- **New options of `SumoController`**: local network file, detectors as a list (with an optional `heading`, to place them by
+  direction of travel), no MinIO upload, emissions aggregated per edge in SUMO (much lighter than per vehicle), precomputed
+  candidate routes, extra options for SUMO and its tools. MinIO, the Data Platform and the NGSI-LD downloader/uploader are
+  imported only when used.
+- **New**: `src/dataspace_job.py`, `src/sdm_output.py`, `Dockerfile.job` (SUMO from its official wheel, not the
+  third-party `ngomariz/sumo-heroku` image), `data/valencia/` (OpenStreetMap network and candidate routes, ODbL),
+  `tools/`, tests and CI.
+- **Removed from this repository**: the password of an account of the toolbox's integration environment in
+  `OIDC_ACCESS_SAMPLE_ADMIN.md` (the history was not imported for that reason).
+
+Licence: EUPL-1.2, as the original. The network of Valencia is © OpenStreetMap contributors, ODbL (`data/valencia/README.md`).
