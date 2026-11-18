@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "sumo-kserve"
+version = "0.0.1"
+description = ""
+authors = ["Libelium Lab"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+kserve = "^0.16.0"
+kafka-python = "^2.3.0"
+aiokafka = "^0.12.0"
+minio = "^7.2.20"
+redis = "^7.1.0"
+prometheus-client = "^0.23.1"
+prometheus-fastapi-instrumentator = "^7.1.0"
+sumolib = "^1.25.0"
+pyproj = "^3.7.2"
+rtree = "^1.4.1"
+python-multipart = "^0.0.20"
+trino = "^0.336.0"

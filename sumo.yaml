@@ -1,0 +1,100 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: urban-flow
+  namespace: kubeflow-ldt-user
+  annotations:
+    sidecar.istio.io/inject: "false"
+
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 3
+    timeout: 600
+    containerConcurrency: 10
+
+    containers:
+    - name: kserve-container
+      image: ain-registry-demo.ldttoolbox.app/user/working-groups/urban-flow:latest
+      imagePullPolicy: Always
+
+      ports:
+      - containerPort: 8080
+        protocol: TCP
+
+      env:
+      - name: MODEL_NAME
+        value: "urban-flow"
+
+      # Centralized Kafka configuration
+      - name: KAFKA_BOOTSTRAP_SERVERS
+        value: "kafka.inference-infra.svc.cluster.local:9092"
+      - name: KAFKA_JOB_REQUESTS_TOPIC
+        value: "job-requests"
+      - name: KAFKA_JOB_STATUS_TOPIC
+        value: "job-status"
+      - name: KAFKA_CONSUMER_GROUP
+        value: "your-model-workers"
+
+      # Centralized MinIO configuration
+      - name: MINIO_ENDPOINT
+        value: "minio.inference-infra.svc.cluster.local:9000"
+      - name: MINIO_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: minio-credentials
+            key: access-key
+      - name: MINIO_SECRET_KEY
+        valueFrom:
+          secretKeyRef:
+            name: minio-credentials
+            key: secret-key
+      - name: MINIO_SECURE
+        value: "false"
+      - name: MINIO_BUCKET
+        value: "inference-data"
+
+      # Centralized Redis configuration
+      - name: REDIS_HOST
+        value: "redis.inference-infra.svc.cluster.local"
+      - name: REDIS_PORT
+        value: "6379"
+      - name: REDIS_DB
+        value: "0"
+      - name: REDIS_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: redis-credentials
+            key: password
+            optional: true
+
+
+      # Job retention
+      - name: JOB_RETENTION_SECONDS
+        value: "86400"
+
+      resources:
+        limits:
+          cpu: "2000m"
+          memory: "4Gi"
+        requests:
+          cpu: "500m"
+          memory: "1Gi"
+
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 3

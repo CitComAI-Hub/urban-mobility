@@ -1,0 +1,16 @@
+# Ignore .env
+**.vscode
+**.pytest_cache
+**.devcontainer
+**config/.env
+**.env*
+
+# Python
+**__pycache__/
+
+# SUMO files
+test-data
+
+# Poetry
+poetry.lock
+poetry.toml
