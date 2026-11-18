@@ -146,15 +146,16 @@ def build_entities(
 def detector_fit(observed_edgedata_file: str, simulated_edgedata_file: str) -> dict:
     """How well the simulation reproduces the counts, per edge with detectors: the
     observed vehicles (edgeDataFromFlow output, what routeSampler aims at) against
-    the simulated ones that entered the edge. GEH statistic and totals."""
-    observed = {}
-    for _, _, edges in _intervals(observed_edgedata_file):
-        for edge_id, attrs in edges.items():
-            observed[edge_id] = observed.get(edge_id, 0.0) + (_number(attrs, "passenger") or 0.0)
-    simulated = {}
-    for _, _, edges in _intervals(simulated_edgedata_file):
-        for edge_id, attrs in edges.items():
-            simulated[edge_id] = simulated.get(edge_id, 0.0) + (_number(attrs, "entered") or 0.0)
+    the simulated ones that entered the edge, in the LAST interval (the earlier ones
+    are warm-up). GEH statistic and totals."""
+    def last(path, attr):
+        result = None
+        for _, _, edges in _intervals(path):
+            result = {e: (_number(a, attr) or 0.0) for e, a in edges.items()}
+        return result or {}
+
+    observed = last(observed_edgedata_file, "passenger")
+    simulated = last(simulated_edgedata_file, "entered")
     if not observed:
         return {}
     geh, pairs = [], []

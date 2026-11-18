@@ -465,23 +465,28 @@ class SumoController:
             str(self.meso_simulation).lower(),
             "--end",
             str(self.simulation_minutes * 60),
-            "--edgedata-output",
-            self.edgedata_output,
             "--queue-output",
             self.queuedata_output,
         ]
         if self.edge_emissions:
-            # emissions per edge and interval instead of per vehicle and step
+            # Traffic and emissions per edge and per interval of the counts (the
+            # --edgedata-output option aggregates the whole simulation in one
+            # interval, which mixes warm-up hours with the measured one), instead of
+            # emissions per vehicle and step.
+            period = self.flow_interval_minutes * 60
             with open(self.edge_emissions_additional, "w") as f:
                 f.write(
                     '<additional>\n'
+                    f'    <edgeData id="traffic" file="{self.edgedata_output}" period="{period}"/>\n'
                     f'    <edgeData id="emissions" type="emissions" file="{self.edge_emissions_output}" '
-                    f'period="{self.flow_interval_minutes * 60}" excludeEmpty="true"/>\n'
+                    f'period="{period}" excludeEmpty="true"/>\n'
                     '</additional>\n'
                 )
             sumo_cmd += ["-a", self.edge_emissions_additional, "--device.emissions.probability", "1"]
         else:
             sumo_cmd += [
+                "--edgedata-output",
+                self.edgedata_output,
                 "--emission-output",
                 self.emission_file,
                 "--device.emissions.period",
