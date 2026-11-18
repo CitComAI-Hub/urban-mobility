@@ -21,6 +21,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -134,17 +135,29 @@ def to_inputs(entities: list[dict], now: datetime, max_age: timedelta):
     return detectors, flows, observed_at
 
 
-def upsert(broker: str, entities: list[dict], context: str, batch_size: int = 200) -> int:
+def upsert(broker: str, entities: list[dict], context: str, batch_size: int, pause: float) -> int:
+    """Small batches with a pause: a broker with little memory (Scorpio with 1.25 GiB
+    in CitCom) was OOM-killed by batches of 200 entities with street geometries.
+    A failed batch is retried once after a longer pause."""
     url = f"{broker.rstrip('/')}/ngsi-ld/v1/entityOperations/upsert"
     headers = {"Content-Type": "application/json", "Link": link(context)}
     failed = 0
     for start in range(0, len(entities), batch_size):
         batch = entities[start : start + batch_size]
         body = json.dumps(batch, ensure_ascii=False).encode("utf-8")
-        response = requests.post(url, headers=headers, data=body, timeout=120)
-        if response.status_code not in (200, 201, 204):
+        for attempt in (1, 2):
+            try:
+                response = requests.post(url, headers=headers, data=body, timeout=120)
+                if response.status_code in (200, 201, 204):
+                    break
+                error = f"{response.status_code} {response.text[:1000]}"
+            except requests.RequestException as e:
+                error = str(e)
+            logger.warning("Upsert of %s (attempt %s): %s", start, attempt, error)
+            time.sleep(pause * 20)
+        else:
             failed += 1
-            logger.error("Upsert %s: %s %s", start, response.status_code, response.text[:1000])
+        time.sleep(pause)
     return failed
 
 
@@ -217,8 +230,10 @@ def main() -> int:
         shutil.rmtree(controller.domain_dir, ignore_errors=True)
 
     logger.info("Publishing %s TrafficFlowObserved and %s CarbonFootprint", len(flows_out), len(footprints))
-    failed = upsert(output_broker, flows_out, TRANSPORTATION_CONTEXT)
-    failed += upsert(output_broker, footprints, ENVIRONMENT_CONTEXT)
+    batch_size = int(env("UPSERT_BATCH_SIZE", "50"))
+    pause = float(env("UPSERT_PAUSE_SECONDS", "0.5"))
+    failed = upsert(output_broker, flows_out, TRANSPORTATION_CONTEXT, batch_size, pause)
+    failed += upsert(output_broker, footprints, ENVIRONMENT_CONTEXT, batch_size, pause)
     if failed:
         logger.error("%s batch(es) failed", failed)
         return 1

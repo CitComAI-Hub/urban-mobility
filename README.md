@@ -303,6 +303,7 @@ last hour and exits. In the CitCom data space it runs every hour as a Kubernetes
 | `MAX_AGE_MINUTES` | `90` | Oldest count used |
 | `MIN_DETECTORS` | `100` | Fewer usable counts: no simulation (exit 1) |
 | `SUMO_THREADS` | CPUs | routeSampler threads |
+| `UPSERT_BATCH_SIZE`, `UPSERT_PAUSE_SECONDS` | `50`, `0.5` | Entities per upsert and pause between batches (be gentle with small brokers) |
 | `SUMO_ARGS`, `RANDOM_TRIPS_ARGS`, `ROUTE_SAMPLER_ARGS` | see `dataspace_job.py` | JSON lists of extra options |
 
 Run it locally against any NGSI-LD broker with counts:
