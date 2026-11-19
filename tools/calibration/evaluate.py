@@ -56,12 +56,12 @@ def run(net: str, routes: str, detectors, flows) -> dict:
         flow_data=flows,
         flow_interval_minutes=60,
         simulation_datetime="2026-01-01T00:00:00",
-        meso_simulation=True,
+        meso_simulation=os.getenv("MESO", "1") == "1",
         upload_results=False,
         edge_emissions=True,  # cheap; the per-vehicle output is not needed
         cleanup=False,
         sumo_args=json.loads(os.getenv("SUMO_ARGS", "null")) or dataspace_job.DEFAULT_SUMO_ARGS,
-        route_sampler_args=dataspace_job.DEFAULT_ROUTE_SAMPLER_ARGS,
+        route_sampler_args=json.loads(os.getenv("ROUTE_SAMPLER_ARGS", "null")) or dataspace_job.DEFAULT_ROUTE_SAMPLER_ARGS,
         candidate_routes_file=routes,
     )
     try:
