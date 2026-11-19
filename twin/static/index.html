@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CitCom.ai | Urban Mobility Digital Twin</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/img/favicon-32x32.png">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css"
+        integrity="sha384-HmYpsz2Aa9Gh3JlkCoh8kUJ2mUKJKTnkyC2Lzt8aLzpPOpnDe8KpFE2xNiBpMDou" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <link rel="stylesheet" href="static/style.css">
+    <link rel="stylesheet" href="static/twin.css">
+    <script type="module" src="static/app.js"></script>
+</head>
+
+<body>
+    <div id="notification" class="notification is-hidden" role="status">
+        <button id="notification-close" class="delete" aria-label="Close"></button>
+        <p id="notification-message"></p>
+    </div>
+
+    <div id="loading" class="loading">
+        <img src="static/img/logo.svg" alt="CitCom.ai" class="logo">
+        <h1 class="subtitle is-5">Urban Mobility Digital Twin</h1>
+        <p id="loading-message" class="has-text-grey">Loading the zone and the latest traffic counts…</p>
+    </div>
+
+    <main id="dashboard" class="dashboard is-hidden">
+        <div id="map" class="map"></div>
+
+        <aside class="side">
+            <h1 class="title is-5">Urban mobility twin</h1>
+            <p id="zone-name" class="is-size-7 has-text-grey"></p>
+
+            <article class="layout-card calibration">
+                <header><span class="layout-name">Now</span><span id="fit-badge" class="tag is-light"></span></header>
+                <p id="data-summary" class="is-size-7"></p>
+                <dl class="metrics" id="metrics-current"></dl>
+            </article>
+
+            <div class="field">
+                <label class="label is-small">Map</label>
+                <div class="buttons has-addons are-small" id="layers">
+                    <button class="button is-selected is-dark" data-layer="traffic" type="button">Traffic</button>
+                    <button class="button" data-layer="co2" type="button">CO₂</button>
+                    <button class="button" data-layer="fit" type="button">Detectors</button>
+                    <button class="button" data-layer="change" type="button" id="change-button" disabled>Change</button>
+                </div>
+            </div>
+
+            <form id="scenario" class="new-layout">
+                <h2 class="title is-6">What if…</h2>
+                <div class="field">
+                    <label class="label is-small">Closed streets</label>
+                    <p id="closed-empty" class="is-size-7 has-text-grey">Click a street on the map to close it. Click it again to open it.</p>
+                    <div id="closed" class="tags"></div>
+                </div>
+                <div class="field">
+                    <label class="label is-small" for="demand">Traffic demand: <span id="demand-value">100 %</span></label>
+                    <input id="demand" type="range" min="50" max="150" step="5" value="100">
+                </div>
+                <button id="simulate" class="button is-primary is-small is-fullwidth" type="submit">Simulate scenario</button>
+                <p class="help">Scenarios run one at a time on the server and take about half a minute.</p>
+            </form>
+
+            <article id="result" class="layout-card is-hidden">
+                <header><span class="layout-name">Scenario</span><span id="result-state" class="layout-state"></span></header>
+                <table class="table is-narrow is-fullwidth comparison">
+                    <thead><tr><th></th><th>Now</th><th>Scenario</th><th>Change</th></tr></thead>
+                    <tbody id="comparison"></tbody>
+                </table>
+                <p id="result-note" class="is-size-7 has-text-grey"></p>
+            </article>
+
+            <p class="is-size-7 has-text-grey about">
+                Traffic counts of the Ajuntament de València read through the CitCom VRAIN Data Space.
+                Simulation: <a href="https://code.europa.eu/ldt-toolbox/ai_models/eu_ldt_urban_mobility" target="_blank" rel="noopener">EU LDT Toolbox Urban Mobility</a>
+                model (SUMO), calibrated every 15 minutes on the detectors of the zone. Scenarios are indicative:
+                the twin reproduces the counted streets; streets without a detector are model estimates.
+            </p>
+        </aside>
+    </main>
+</body>
+
+</html>

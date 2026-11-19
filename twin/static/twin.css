@@ -1,0 +1,57 @@
+/* Twin-specific additions on top of the shared CitCom service style (style.css). */
+.calibration header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.calibration #data-summary {
+    margin-top: 0.35rem;
+    color: var(--ink-2);
+}
+
+#layers .button.is-selected {
+    font-weight: 600;
+}
+
+#closed .tag {
+    cursor: default;
+}
+
+input[type="range"] {
+    width: 100%;
+}
+
+.comparison {
+    font-size: 0.78rem;
+    margin-top: 0.4rem;
+    background: transparent;
+}
+
+.comparison td,
+.comparison th {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.comparison td:first-child,
+.comparison th:first-child {
+    text-align: left;
+    white-space: normal;
+}
+
+.comparison .up {
+    color: #b8323a;
+}
+
+.comparison .down {
+    color: #2f7d4f;
+}
+
+.about {
+    margin-top: auto;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--line);
+}
+
