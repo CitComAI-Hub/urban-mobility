@@ -1,6 +1,7 @@
 name: Publish image
-# Builds and publishes ghcr.io/<owner>/urban-mobility:<tag> (the CitCom data space job, Dockerfile.job) when a v*
-# tag is pushed, e.g. git tag v1.0 && git push origin v1.0
+# Builds and publishes, when a v* tag is pushed (git tag v1.0 && git push origin v1.0):
+# - ghcr.io/<owner>/urban-mobility:<tag>       the CitCom data space job (Dockerfile.job)
+# - ghcr.io/<owner>/urban-mobility-twin:<tag>  the Urban Mobility Digital Twin service (Dockerfile.twin)
 "on":
   push:
     tags:
@@ -11,14 +12,21 @@ permissions:
   packages: write
 jobs:
   publish:
-    name: Build and push to GHCR
+    name: Build and push ${{ matrix.suffix || 'job' }} to GHCR
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - file: Dockerfile.job
+            suffix: ""
+          - file: Dockerfile.twin
+            suffix: "-twin"
     steps:
       - name: Git checkout
         uses: actions/checkout@v4
       - name: Image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}${{ matrix.suffix }}" >> "$GITHUB_OUTPUT"
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@v5
@@ -39,7 +47,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.job
+          file: ${{ matrix.file }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

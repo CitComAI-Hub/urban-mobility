@@ -132,11 +132,25 @@ def _read_vehicles(path: str) -> list:
     return vehicles
 
 
+def _read_vehicles_from_candidates(path: str, limit: int | None = None) -> list:
+    """(id, 0, edges) of the candidate routes (tests and tools)."""
+    import gzip
+    out = []
+    with (gzip.open(path) if path.endswith(".gz") else open(path, "rb")) as fh:
+        for _, el in ET.iterparse(fh):
+            if el.tag == "route" and el.get("edges"):
+                out.append((el.get("id") or str(len(out)), 0.0, el.get("edges").split()))
+                if limit and len(out) >= limit:
+                    break
+            elif el.tag == "vehicle":
+                el.clear()
+    return out
+
+
 def _write_vehicles(path: str, vehicles: list):
     with open(path, "w") as f:
         f.write("<routes>\n")
-        for vid, depart, edges in sorted(vehicles, key=lambda v: v[1]):
-            f.write(f'  <vehicle id="{vid}" depart="{depart:.2f}"><route edges="{" ".join(edges)}"/></vehicle>\n')
+        f.writelines(f'  <vehicle id="{vid}" depart="{depart:.2f}"><route edges="{" ".join(edges)}"/></vehicle>\n' for vid, depart, edges in sorted(vehicles, key=lambda v: v[1]))
         f.write("</routes>\n")
 
 

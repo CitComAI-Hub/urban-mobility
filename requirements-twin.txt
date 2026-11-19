@@ -1,0 +1,4 @@
+# Dependencies of the Urban Mobility Digital Twin (twin/, Dockerfile.twin): the job's plus the web server.
+-r requirements-job.txt
+flask==3.1.2
+gunicorn==23.0.0

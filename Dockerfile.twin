@@ -1,0 +1,35 @@
+# Urban Mobility Digital Twin (twin/): web service of the zone twin, fed through the CitCom data space.
+# SUMO from its official Python wheel (eclipse-sumo), as Dockerfile.job.
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+        libx11-6 libxext6 libxrender1 libgl1 libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements-job.txt requirements-twin.txt ./
+RUN pip install --no-cache-dir -r requirements-twin.txt \
+    && apt-get purge -y git && apt-get autoremove -y
+
+RUN ln -s "$(python -c 'import sumo, os; print(os.path.dirname(sumo.__file__))')" /opt/sumo
+ENV SUMO_HOME=/opt/sumo \
+    PATH=/opt/sumo/bin:$PATH \
+    PYTHONPATH=/app/src:/app/twin \
+    ZONE_NET=/app/data/valencia/zones/camins-al-grau/net.xml.gz \
+    ZONE_ROUTES=/app/data/valencia/zones/camins-al-grau/candidate.rou.xml.gz \
+    ZONE_NAME="Camins al Grau – Poblats Marítims" \
+    ZONE_BBOX="-0.34787,39.45781,-0.31798,39.47964" \
+    WORK_DIR=/tmp/twin \
+    PYTHONUNBUFFERED=1
+
+COPY src ./src
+COPY twin ./twin
+COPY data/valencia/zones ./data/valencia/zones
+
+RUN useradd --uid 10001 --no-create-home twin
+USER 10001
+EXPOSE 5000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz')"]
+# One worker: the current state and the scenario queue live in its memory
+CMD ["gunicorn", "--chdir", "/app/twin", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "8", "--timeout", "120", "server:create_app()"]

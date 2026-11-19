@@ -1,0 +1,8 @@
+{
+  "name": "Camins al Grau – Poblats Marítims",
+  "bbox": [-0.34787, 39.45781, -0.31798, 39.47964],
+  "built": "2026-11-19",
+  "network": "v1 Valencia network (tools/network/build_network.py) cut with netconvert --keep-edges.in-boundary",
+  "candidate_routes": "city candidate routes cut to the zone with SUMO tools/route/cutRoutes.py --min-length 2",
+  "selection": "tools/calibration/find_zones.py: 79 % of the lanes entering the zone have a detector; 142 detectors inside"
+}

@@ -18,11 +18,10 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
-
-from flask import Flask, jsonify, request, send_from_directory
+from datetime import UTC, datetime, timedelta
 
 import engine
+from flask import Flask, jsonify, request, send_from_directory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("twin")
@@ -42,14 +41,16 @@ def read_counts():
                     times.append(r["dateObserved"])
         return detectors, flows, max(times) if times else ""
     import requests
-    from dataspace_job import read_counts as read_entities, to_inputs
+
+    from dataspace_job import read_counts as read_entities
+    from dataspace_job import to_inputs
     session = requests.Session()
     if os.getenv("DS_ISSUER_URL"):
         from ds_consumer_auth import data_space_session
         session = data_space_session()
     entities = [e for e in read_entities(session, os.environ["TRAFFIC_SOURCE_URL"], "TrafficFlowObserved")
                 if ":pm_" in e["id"]]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     detectors, flows, observed = to_inputs(entities, now, timedelta(minutes=int(os.getenv("MAX_AGE_MINUTES", "90"))))
     return detectors, flows, observed.isoformat()
 
